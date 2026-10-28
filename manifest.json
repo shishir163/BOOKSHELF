@@ -1,0 +1,16 @@
+{
+  "name": "Book Shelf",
+  "short_name": "Book Shelf",
+  "description": "My books from Google Drive on a wooden shelf, with highlights, notes and search.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#e9d9bf",
+  "theme_color": "#e9d9bf",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
