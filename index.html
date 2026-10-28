@@ -865,7 +865,7 @@ function withDrive(fn) {
 }
 function driveErr(e) {
   const m = e && e.message;
-  return { auth: 'Google sign-in ran out. Tap again to continue.', net: 'Could not reach Google Drive. Check the internet.', notfound: 'This file is no longer in Google Drive.', toobig: 'This file is too big for Google to convert. Open it in Google Drive instead.', quota: 'Google Drive is busy. Try again in a minute.' }[m] || 'Google Drive had a problem. Try again.';
+  return { auth: 'Google sign-in ran out. Tap again to continue.', net: 'Could not reach Google Drive. Check the internet.', notfound: 'This file is no longer in Google Drive.', apioff: 'Google Drive API is not turned on for this app. Turn it on in Google Cloud (APIs & Services → Library → Google Drive API → Enable), wait two minutes, then try again.', scope: 'Drive permission was not given. Tap again and, on the Google screen, tick the box to let Book Shelf see your Google Drive files.', toobig: 'This file is too big for Google to convert. Open it in Google Drive instead.', quota: 'Google Drive is busy. Try again in a minute.' }[m] || 'Google Drive had a problem. Try again.';
 }
 async function gfetch(url, opts = {}) {
   if (!Drive.valid()) throw new Error('auth');
@@ -873,7 +873,14 @@ async function gfetch(url, opts = {}) {
   let r; try { r = await fetch(url.startsWith('http') ? url : 'https://www.googleapis.com/drive/v3/' + url, Object.assign({}, opts, { headers: h })); } catch (e) { throw new Error('net'); }
   if (r.status === 401) { Drive.token = null; LS.del('tok'); throw new Error('auth'); }
   if (r.status === 404) throw new Error('notfound');
-  if (r.status === 403 || r.status === 429) { let t = ''; try { t = await r.text(); } catch (e) {} if (/exportSizeLimit|too large/i.test(t)) throw new Error('toobig'); throw new Error('quota'); }
+  if (r.status === 403 || r.status === 429) {
+    let t = ''; try { t = await r.text(); } catch (e) {}
+    console.warn('Drive', r.status, t.slice(0, 400));
+    if (/exportSizeLimit|too large/i.test(t)) throw new Error('toobig');
+    if (/accessNotConfigured|SERVICE_DISABLED|has not been used in project|is disabled/i.test(t)) throw new Error('apioff');
+    if (/insufficientPermissions|insufficient authentication scopes|ACCESS_TOKEN_SCOPE_INSUFFICIENT/i.test(t)) { Drive.token = null; LS.del('tok'); LS.del('consented'); throw new Error('scope'); }
+    throw new Error('quota');
+  }
   if (!r.ok) throw new Error('http');
   return r;
 }
@@ -1440,9 +1447,9 @@ function openEdit(b) {
     const pg = parseInt(g('f-pages')); if (pg > 0) { x.pages = pg; if (!x.pageCount) x.pageCount = 0; }
     if (FORM.cats.join() !== (x.cats || []).join()) x.catsManual = true;
     x.cats = FORM.cats.slice(); x.tags = FORM.tags.slice();
-    x.coverUse = FORM.use;
+    x.coverUse = FORM.use; x.coverNone = false;
     if (FORM.use === 'custom') x.cover = FORM.custom; else if (FORM.page) x.cover = FORM.page;
-    if (FORM.use === 'none') { x.coverUse = 'page'; x.cover = ''; x.coverOnline = ''; x.coverTried = true; }
+    if (FORM.use === 'none') { x.coverUse = 'page'; x.cover = ''; x.coverOnline = ''; x.coverTried = true; x.coverNone = true; }
     x.spineColor = FORM.color; x.colorManual = FORM.colorManual;
     await saveBook(x); closeSheet(); renderAll(); toast('Saved');
   });
@@ -1733,6 +1740,16 @@ async function openPdf(bytes) {
   R.n = R.pdf.numPages;
   const b = byId(R.id) || R.book; b.pageCount = R.n;
   const p1 = await R.pdf.getPage(1); const v = p1.getViewport({ scale: 1 }); R.p1 = { w: v.width, h: v.height }; R.base[1] = R.p1;
+  // Big books are skipped by the background cover job, so the first page becomes the cover the first time the book is opened.
+  if (!b.cover && !b.coverOnline && !b.coverNone) {
+    try {
+      const vp = p1.getViewport({ scale: 260 / v.width }); const cv = document.createElement('canvas'); cv.width = Math.round(vp.width); cv.height = Math.round(vp.height);
+      const cx = cv.getContext('2d'); cx.fillStyle = '#fff'; cx.fillRect(0, 0, cv.width, cv.height);
+      await p1.render({ canvasContext: cx, viewport: vp }).promise;
+      b.cover = cv.toDataURL('image/jpeg', .7); if (!b.colorManual) b.spineColor = colorFromImage(cv) || b.spineColor;
+      saveBookSoon(b);
+    } catch (e) { console.warn('cover', e); }
+  }
   R.marks = await Store.marksFor(R.id);
   computeFit();
   const pages = $('#rdPages'); let html = '';
@@ -1977,6 +1994,15 @@ function bindPages(pages) {
     ptr.moved = true;
     if (R.tool === 'eraser') { eraseAt(ptr.p, e.clientX, e.clientY, ptr); return; }
     if (!R.live) return;
+    if (R.tool === 'marker') {
+      // Highlighter: always a straight line from where you pressed to where you are now; near-horizontal snaps flat.
+      const [x0, y0] = [R.live.pts[0], R.live.pts[1]]; let [x, y] = toBase(ptr.p, e.clientX, e.clientY);
+      if (Math.abs(y - y0) < Math.max(5, Math.abs(x - x0) * .1)) y = y0;
+      else if (Math.abs(x - x0) < Math.max(5, Math.abs(y - y0) * .1)) x = x0;
+      R.live.pts = [x0, y0, x, y];
+      const lp0 = document.getElementById('livePath'); if (lp0) lp0.setAttribute('d', inkPath(R.live.pts));
+      return;
+    }
     const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
     const minD = 1.2 / (R.fit * R.z);
     evs.forEach(ev => { const [x, y] = toBase(ptr.p, ev.clientX, ev.clientY); const n = R.live.pts.length; if (Math.hypot(x - R.live.pts[n - 2], y - R.live.pts[n - 1]) >= minD) R.live.pts.push(x, y); });
