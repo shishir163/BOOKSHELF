@@ -507,7 +507,7 @@ main{padding-bottom:calc(84px + env(safe-area-inset-bottom,0px))}
 <script>
 (() => {
 'use strict';
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.0.5';
 const BUILD = 'github';
 const LIBS = {"pdf": ["lib/pdf.min.js"], "pdfWorkerSrc": "lib/pdf.worker.min.js", "pdflib": ["lib/pdf-lib.min.js"], "mammoth": ["lib/mammoth.browser.min.js"], "xlsx": ["lib/xlsx.full.min.js"], "firebase": ["lib/firebase-app-compat.js", "lib/firebase-auth-compat.js", "lib/firebase-firestore-compat.js"]};
 const CFG = window.BOOKSHELF_CONFIG || {};
@@ -1682,7 +1682,7 @@ async function openReader(id, page, find) {
   if (R.open) closeReader();
   const el = $('#reader');
   R = { open: true, id, book: b, kind: 'pdf', pdf: null, n: 0, base: {}, p1: null, z: 1, fit: 1, marks: {}, tool: 'read', hl: S.rd.hl || HL_COLORS[0], pen: S.rd.pen || PEN_COLORS[0], penW: S.rd.penW || 2, mkW: S.rd.mkW || 14, undo: [], redo: [], rendered: new Map(), cur: page || b.lastPage || 1, chrome: true, lastAct: Date.now(), find, els: [], tasks: new Map() };
-  R.mk = S.rd.mk || 'hl'; el.innerHTML = readerShell(b); el.hidden = false; el.className = 'rd' + (S.rd.layout === 'h' ? ' hz' : ''); setMode(S.rd.mode);
+  R.mk = S.rd.mk || 'hl'; R.pm = S.rd.pm || 'free'; el.innerHTML = readerShell(b); el.hidden = false; el.className = 'rd' + (S.rd.layout === 'h' ? ' hz' : ''); setMode(S.rd.mode);
   $('#rdDim').style.opacity = S.rd.dim || 0;
   document.body.classList.add('locked'); pushNav('reader');
   b.lastOpened = Date.now(); if (b.kind === 'pdf' && (!b.status || b.status === 'want')) b.status = 'reading'; saveBookSoon(b);
@@ -1731,7 +1731,7 @@ function renderTools() {
   const colors = hlPal ? HL_COLORS : PEN_COLORS;
   const curC = hlPal ? R.hl : R.pen;
   t.innerHTML = `<div class="tool-row">${TOOLS.map(([k, l, i]) => `<button class="tool ${R.tool === k ? 'on' : ''}" data-r="tool" data-t="${k}" aria-pressed="${R.tool === k}">${rdIcon(i)}${l}</button>`).join('')}<span style="flex:1"></span><button class="tool ic" data-r="undo" ${R.undo.length ? '' : 'disabled style="opacity:.35"'} aria-label="Undo">${IC.undo}Undo</button><button class="tool ic" data-r="redo" ${R.redo.length ? '' : 'disabled style="opacity:.35"'} aria-label="Redo">${IC.redo}Redo</button></div>
-  ${drawTool ? `<div class="colors">${colors.map(c => `<button class="cdot" style="--cc:${c}" data-r="color" data-c="${c}" aria-pressed="${curC === c}" aria-label="Colour"></button>`).join('')}${R.tool === 'pen' ? `<div class="wsel">${[1.2, 2.2, 4].map(w => `<button data-r="width" data-w="${w}" aria-pressed="${R.penW === w}" aria-label="Thickness"><i style="height:${Math.max(2, Math.round(w))}px"></i></button>`).join('')}</div>` : ''}${R.tool === 'marker' ? `<div class="mmode">${[['hl', 'Highlight'], ['ul', 'Underline'], ['st', 'Strike']].map(([k, l]) => `<button data-r="mkmode" data-m="${k}" aria-pressed="${R.mk === k}">${l}</button>`).join('')}</div>` : ''}</div>` : ''}`;
+  ${drawTool ? `<div class="colors">${colors.map(c => `<button class="cdot" style="--cc:${c}" data-r="color" data-c="${c}" aria-pressed="${curC === c}" aria-label="Colour"></button>`).join('')}${R.tool === 'pen' ? `<div class="mmode">${[['free', 'Freehand'], ['line', 'Straight line']].map(([k, l]) => `<button data-r="penmode" data-m="${k}" aria-pressed="${R.pm === k}">${l}</button>`).join('')}</div><div class="wsel" style="margin-left:6px">${[1.2, 2.2, 4].map(w => `<button data-r="width" data-w="${w}" aria-pressed="${R.penW === w}" aria-label="Thickness"><i style="height:${Math.max(2, Math.round(w))}px"></i></button>`).join('')}</div>` : ''}${R.tool === 'marker' ? `<div class="mmode">${[['hl', 'Highlight'], ['ul', 'Underline'], ['st', 'Strike']].map(([k, l]) => `<button data-r="mkmode" data-m="${k}" aria-pressed="${R.mk === k}">${l}</button>`).join('')}</div>` : ''}</div>` : ''}`;
   $('#reader').classList.toggle('drawing', ['pen', 'marker', 'eraser'].includes(R.tool));
 }
 
@@ -2014,6 +2014,14 @@ function updateSnap() {
   R.liveSel = { t: R.mk, c: R.mk === 'hl' ? R.hl : R.pen, byPage: info ? info.byPage : {}, info };
   new Set(old.concat(Object.keys(R.liveSel.byPage))).forEach(p => drawMarks(+p));
 }
+// A straight line from where the pen went down to where it is now; nearly flat or nearly upright lines snap exactly flat or upright.
+function straightTo(cx, cy) {
+  const [x0, y0] = [R.live.pts[0], R.live.pts[1]]; let [x, y] = toBase(R.live.p, cx, cy);
+  if (Math.abs(y - y0) < Math.max(5, Math.abs(x - x0) * .1)) y = y0;
+  else if (Math.abs(x - x0) < Math.max(5, Math.abs(y - y0) * .1)) x = x0;
+  R.live.pts = [x0, y0, x, y];
+  const lp = document.getElementById('livePath'); if (lp) lp.setAttribute('d', inkPath(R.live.pts));
+}
 function stopAuto() { clearInterval(R.autoT); R.autoT = null; }
 function autoScroll(cy) {
   if (S.rd.layout === 'h') return; const sc = $('#rdScroll'); const q = sc.getBoundingClientRect();
@@ -2051,7 +2059,7 @@ function bindPages(pages) {
     if (R.tool === 'marker') { R.spanC = null; const A = snapPoint(e.clientX, e.clientY); if (A) { ptr.snap = { A, last: A }; R.liveSel = null; return; } }
     if (R.tool === 'eraser') { ptr.before = JSON.stringify(R.marks[p] || []); ptr.erased = false; eraseAt(p, e.clientX, e.clientY, ptr); return; }
     const pen = R.tool === 'pen';
-    R.live = { p, c: pen ? R.pen : R.hl, w: pen ? R.penW : R.mkW, op: pen ? 1 : .38, pts: toBase(p, e.clientX, e.clientY) };
+    R.live = { p, c: pen ? R.pen : R.hl, w: pen ? R.penW : R.mkW, op: pen ? 1 : .38, pts: toBase(p, e.clientX, e.clientY), straight: !pen || R.pm === 'line' };
     drawMarks(p);
   });
   pages.addEventListener('pointermove', e => {
@@ -2061,15 +2069,8 @@ function bindPages(pages) {
     if (ptr.snap) { updateSnap(); autoScroll(e.clientY); return; }
     if (R.tool === 'eraser') { eraseAt(ptr.p, e.clientX, e.clientY, ptr); return; }
     if (!R.live) return;
-    if (R.tool === 'marker') {
-      // Pages with no text (scans): a straight line from where you pressed to where you are now; near-horizontal snaps flat.
-      const [x0, y0] = [R.live.pts[0], R.live.pts[1]]; let [x, y] = toBase(ptr.p, e.clientX, e.clientY);
-      if (Math.abs(y - y0) < Math.max(5, Math.abs(x - x0) * .1)) y = y0;
-      else if (Math.abs(x - x0) < Math.max(5, Math.abs(y - y0) * .1)) x = x0;
-      R.live.pts = [x0, y0, x, y];
-      const lp0 = document.getElementById('livePath'); if (lp0) lp0.setAttribute('d', inkPath(R.live.pts));
-      return;
-    }
+    if (R.live.straight) { straightTo(e.clientX, e.clientY); return; }
+    clearTimeout(ptr.hold); ptr.hold = setTimeout(() => { if (R.live && R.tool === 'pen' && !R.live.straight && R.live.pts.length > 4) { R.live.straight = true; straightTo(ptr.x, ptr.y); } }, 450);
     const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
     const minD = 1.2 / (R.fit * R.z);
     evs.forEach(ev => { const [x, y] = toBase(ptr.p, ev.clientX, ev.clientY); const n = R.live.pts.length; if (Math.hypot(x - R.live.pts[n - 2], y - R.live.pts[n - 1]) >= minD) R.live.pts.push(x, y); });
@@ -2077,7 +2078,7 @@ function bindPages(pages) {
   });
   const end = e => {
     if (!ptr || ptr.id !== e.pointerId) return;
-    const p = ptr.p; stopAuto();
+    const p = ptr.p; stopAuto(); clearTimeout(ptr.hold);
     if (ptr.snap) {
       const info = R.liveSel && R.liveSel.info; const t = R.mk, c = R.mk === 'hl' ? R.hl : R.pen;
       const had = R.liveSel && Object.keys(R.liveSel.byPage).length; const pgs = had ? Object.keys(R.liveSel.byPage) : [];
@@ -2093,7 +2094,7 @@ function bindPages(pages) {
     }
     ptr = null; R.drew = true; setTimeout(() => { R.drew = false; }, 60);
   };
-  pages.addEventListener('pointerup', end); pages.addEventListener('pointercancel', e => { if (ptr && ptr.id === e.pointerId) { stopAuto(); const q = R.liveSel ? Object.keys(R.liveSel.byPage) : []; R.liveSel = null; q.forEach(x => drawMarks(+x)); cancelLive(); ptr = ptr_ = null; } });
+  pages.addEventListener('pointerup', end); pages.addEventListener('pointercancel', e => { if (ptr && ptr.id === e.pointerId) { stopAuto(); clearTimeout(ptr.hold); const q = R.liveSel ? Object.keys(R.liveSel.byPage) : []; R.liveSel = null; q.forEach(x => drawMarks(+x)); cancelLive(); ptr = ptr_ = null; } });
 }
 function bindReader() {
   const rd = $('#reader'); const sc = $('#rdScroll');
@@ -2358,6 +2359,7 @@ const RACT = {
   close: () => closeReader(),
   closePanel: () => closePanel(),
   tool: a => { R.tool = a.dataset.t; hideSel(); try { getSelection().removeAllRanges(); } catch (e) {} renderTools(); if (R.tool !== 'read') toggleChrome(true); },
+  penmode: a => { R.pm = a.dataset.m; S.rd.pm = R.pm; saveRd(); renderTools(); toast(R.pm === 'line' ? 'Straight lines. Drag to draw one.' : 'Freehand. Hold still at the end to straighten.', 2200); },
   mkmode: a => { R.mk = a.dataset.m; S.rd.mk = R.mk; saveRd(); renderTools(); },
   color: a => { if (R.tool === 'note' || (R.tool === 'marker' && R.mk === 'hl')) { R.hl = a.dataset.c; S.rd.hl = R.hl; } else { R.pen = a.dataset.c; S.rd.pen = R.pen; } saveRd(); renderTools(); },
   width: a => { const w = +a.dataset.w; if (R.tool === 'pen') { R.penW = w; S.rd.penW = w; } else { R.mkW = w; S.rd.mkW = w; } saveRd(); renderTools(); },
