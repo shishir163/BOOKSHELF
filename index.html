@@ -456,6 +456,15 @@ main{padding-bottom:calc(84px + env(safe-area-inset-bottom,0px))}
 @media (min-width:700px){ .d-cover{width:160px} .d-head h1{font-size:32px} .tiles{grid-template-columns:repeat(4,1fr)} .themes{grid-template-columns:repeat(4,1fr)} .rd-panel{left:auto;right:16px;bottom:16px;width:420px;border-radius:16px;max-height:80%} }
 @media (prefers-reduced-motion: reduce){ *{transition:none!important;animation:none!important} }
 
+/* removed books + send sheet */
+.hidlist{display:grid;gap:6px;margin-top:8px}
+.hidrow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;border:1px solid var(--line);border-radius:10px}
+.hidrow span{display:grid;min-width:0}.hidrow strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.hidrow small{color:var(--ink-2);font-size:12px}
+#sendBody .card{display:grid;gap:6px}
+#sendBody .card.ready{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+#sendBody .btnrow.wrap{flex-wrap:wrap}
+#sendBody .pbar{height:5px;border-radius:5px;background:var(--line);overflow:hidden}#sendBody .pbar i{display:block;height:100%;width:5%;background:var(--accent);transition:width .2s}
+
 </style>
 </head>
 <body>
@@ -507,7 +516,7 @@ main{padding-bottom:calc(84px + env(safe-area-inset-bottom,0px))}
 <script>
 (() => {
 'use strict';
-const APP_VERSION = '1.0.5';
+const APP_VERSION = '1.0.6';
 const BUILD = 'github';
 const LIBS = {"pdf": ["lib/pdf.min.js"], "pdfWorkerSrc": "lib/pdf.worker.min.js", "pdflib": ["lib/pdf-lib.min.js"], "mammoth": ["lib/mammoth.browser.min.js"], "xlsx": ["lib/xlsx.full.min.js"], "firebase": ["lib/firebase-app-compat.js", "lib/firebase-auth-compat.js", "lib/firebase-firestore-compat.js"]};
 const CFG = window.BOOKSHELF_CONFIG || {};
@@ -667,6 +676,8 @@ const IC = {
 
 /* ---------- state ---------- */
 let BOOKS = [];
+let HIDDEN = []; // books taken off the shelf: kept with their marks, so they can come back
+function setBooks(all) { BOOKS = all.filter(b => !b.hidden); HIDDEN = all.filter(b => b.hidden); }
 const byId = id => BOOKS.find(b => b.id === id);
 const TAG_COLORS = ['#c0392b', '#d35400', '#c99700', '#27ae60', '#16a085', '#2980b9', '#8e44ad', '#d6336c', '#6d4c41', '#546e7a'];
 const DEFAULT_META = () => ({
@@ -722,7 +733,7 @@ function newBook(o) {
 /* ---------- store: on this device (IndexedDB) ---------- */
 const LocalStore = {
   async init() {
-    BOOKS = await IDB.all('books');
+    setBooks(await IDB.all('books'));
     META = Object.assign(DEFAULT_META(), (await IDB.get('kv', 'meta')) || {});
     STATS = (await IDB.get('kv', 'stats')) || { days: {} };
     if (!BOOKS.length && !LS.get('seeded', 0)) { await loadExamples(true); LS.set('seeded', 1); }
@@ -756,7 +767,7 @@ const CloudStore = {
     let first = true;
     await new Promise(res => {
       this.unsub.push(this.col('books').onSnapshot(snap => {
-        BOOKS = snap.docs.map(d => d.data());
+        setBooks(snap.docs.map(d => d.data()));
         if (first) { first = false; res(); } else scheduleRender();
       }, err => { console.warn(err); res(); }));
     });
@@ -797,7 +808,20 @@ const saveMeta = debounce(() => Store.saveMeta(), 300);
 const pendingBooks = new Map();
 const flushBooks = debounce(() => { const list = [...pendingBooks.values()]; pendingBooks.clear(); list.forEach(b => Store.saveBook(b)); }, 1500);
 function saveBookSoon(b) { pendingBooks.set(b.id, b); flushBooks(); }
-async function saveBook(b) { pendingBooks.delete(b.id); const k = BOOKS.findIndex(x => x.id === b.id); if (k >= 0) BOOKS[k] = b; else BOOKS.push(b); await Store.saveBook(b); }
+async function saveBook(b) {
+  pendingBooks.delete(b.id);
+  HIDDEN = HIDDEN.filter(x => x.id !== b.id);
+  if (b.hidden) { BOOKS = BOOKS.filter(x => x.id !== b.id); HIDDEN.push(b); }
+  else { const k = BOOKS.findIndex(x => x.id === b.id); if (k >= 0) BOOKS[k] = b; else BOOKS.push(b); }
+  await Store.saveBook(b);
+}
+// Taking a Drive book off the shelf only hides it: highlights, notes, bookmarks and the reading place stay.
+async function hideBook(id) {
+  const b = byId(id); if (!b) return;
+  b.hidden = true; b.hiddenAt = Date.now(); await saveBook(b);
+  [id, id + '#pdf'].forEach(k => { IDB.del('files', k); if (typeof OFFLINE !== 'undefined') OFFLINE.delete(k); }); IDB.del('text', id);
+}
+async function unhideBook(id) { const b = HIDDEN.find(x => x.id === id); if (!b) return; b.hidden = false; delete b.hiddenAt; await saveBook(b); }
 async function removeBook(id) { BOOKS = BOOKS.filter(b => b.id !== id); await Store.deleteBook(id); IDB.del('files', id); IDB.del('text', id); }
 let statsDirty = false;
 const saveStats = debounce(() => { statsDirty = false; Store.saveStats(); }, 30000);
@@ -932,6 +956,19 @@ function uploadDrive(file, folderId, name, mime, onProg) {
   });
 }
 
+/* ---------- a link that opens only this one file ---------- */
+const bookLink = b => `https://drive.google.com/file/d/${b.driveId}/view?usp=sharing`;
+async function bookLinkOn(b) {
+  const p = await gjson(`files/${b.driveId}/permissions?supportsAllDrives=true&fields=id`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ role: 'reader', type: 'anyone', allowFileDiscovery: false }) });
+  b.linkOn = true; b.linkPerm = p.id; await saveBook(b);
+}
+async function bookLinkOff(b) {
+  const del = id => gfetch(`files/${b.driveId}/permissions/${id}?supportsAllDrives=true`, { method: 'DELETE' }).catch(e => { if (e.message !== 'notfound') throw e; });
+  const j = await gjson(`files/${b.driveId}/permissions?supportsAllDrives=true&fields=permissions(id,type)`);
+  for (const p of (j.permissions || [])) if (p.type === 'anyone') await del(p.id);
+  b.linkOn = false; delete b.linkPerm; await saveBook(b);
+}
+
 /* ---------- sync the Drive folder into the shelf ---------- */
 let syncing = false;
 async function syncDrive(opts = {}) {
@@ -956,6 +993,7 @@ async function syncDrive(opts = {}) {
     const seen = new Set(); const fresh = [], changed = [];
     for (const f of files) {
       seen.add(f.id);
+      if (HIDDEN.some(h => h.id === f.id)) continue;
       const cat = f.top ? META.cats.find(c => c.folderId === f.top) : null;
       let b = byId(f.id);
       if (!b) {
@@ -1370,6 +1408,7 @@ function detailHTML(b) {
     <div class="seg" role="group" aria-label="Reading status" style="justify-self:start">${[['want', 'Want to read'], ['reading', 'Reading'], ['done', 'Finished']].map(([v, l]) => `<button data-act="status" data-v="${v}" aria-pressed="${st === v}">${l}</button>`).join('')}</div>
     <div class="d-actions">
       <button class="act ${b.fav ? 'on' : ''}" data-act="fav">${b.fav ? IC.heart : IC.heartO}${b.fav ? 'Favourite' : 'Add to favourites'}</button>
+      <button class="act" data-act="send" ${b.missing ? 'disabled style="opacity:.5"' : ''}>${IC.share}Send this book</button>
       <button class="act" data-act="findOnline">${IC.globe}Find details online</button>
       <button class="act ${b.keep ? 'on' : ''}" data-act="keep" ${b.src !== 'drive' ? 'disabled style="opacity:.5"' : ''}>${IC.device}${b.keep ? 'Kept on this device' : 'Keep on this device'}</button>
     </div>
@@ -1383,7 +1422,7 @@ function detailHTML(b) {
       ${b.src === 'drive' ? `<a class="btn plain" href="https://drive.google.com/file/d/${encodeURIComponent(b.driveId)}/view" target="_blank" rel="noopener">${IC.cloud}Open in Google Drive</a>` : ''}
       <button class="btn danger" data-act="del">${IC.trash}Remove from shelf</button>
     </div>
-    <p class="hint">${b.src === 'drive' ? 'Removing it from the shelf does not delete the file from Google Drive. It comes back on the next sync unless you move the file out of the folder.' : b.example ? 'Example book.' : 'Removing deletes the copy kept on this device.'}</p>
+    <p class="hint">${b.src === 'drive' ? 'Removing only takes it off the shelf. The file stays in Google Drive, and your highlights, notes and reading place are kept. Bring it back any time from Settings → Removed books.' : b.example ? 'Example book.' : 'Removing deletes the copy kept on this device.'}</p>
   </div>`;
 }
 function bindDetail(s, b) {
@@ -1604,6 +1643,77 @@ function renderFolder(s) {
   $('#fpBody', s).innerHTML = `<div class="crumbs">${FP.stack.map((f, k) => k < FP.stack.length - 1 ? `<button data-act="fpUp" data-k="${k}">${esc(f.name)}</button><span>›</span>` : `<strong>${esc(f.name)}</strong>`).join('')}</div>
     ${cur.id !== 'root' ? `<button class="btn big" data-act="fpUse">Use “${esc(cur.name)}”</button>` : '<p class="hint">Open the folder that holds your books, then tap “Use”.</p>'}
     <div>${FP.list == null ? '<div class="loading"><span class="spinner"></span>Loading folders…</div>' : FP.list.length ? FP.list.map(f => `<button class="folder-row" data-act="fpOpen" data-id="${esc(f.id)}" data-name="${esc(f.name)}">${IC.folder}<span>${esc(f.name)}</span>${IC.chevR.replace('<svg', '<svg width="18" height="18"')}</button>`).join('') : '<p class="hint">No folders inside.</p>'}</div>`;
+}
+
+/* ---------- send a book to someone (WhatsApp, Telegram, Mail…) ---------- */
+let SEND = null;
+function openSend(b) {
+  SEND = { b, file: null, busy: '' };
+  openSheet(`${barHTML('Send this book')}<div class="sh-body" id="sendBody"></div>`, { send: b.id });
+  drawSend();
+}
+function drawSend() {
+  const box = $('#sendBody'); if (!box || !SEND) return; const b = SEND.b, f = SEND.file;
+  const marks = b.kind === 'pdf' && (b.markCount > 0 || (R.open && R.id === b.id && Object.keys(R.marks || {}).length));
+  const u = b.src === 'drive' ? bookLink(b) : '';
+  box.innerHTML = `
+  ${SEND.busy ? `<div class="card"><div class="loading"><span class="spinner"></span><span>${esc(SEND.busy)}</span></div><div class="pbar"><i id="sendBar"></i></div></div>` : ''}
+  ${f && !SEND.busy ? `<div class="card ready"><strong>${esc(f.name)}</strong><span class="hint">${fmtSize(f.size)} · ready</span>
+    <div class="btnrow"><button class="btn big" data-act="sendNow">${IC.share}Send…</button></div>
+    <p class="hint">Pick WhatsApp, Telegram, Mail or any other app from the list that opens.${f.size > 25e6 ? ' Mail usually takes files only up to 25 MB, so use WhatsApp or Telegram for this one.' : ''}</p>
+    <div class="btnrow"><button class="btn plain" data-act="sendSave">Save to this device instead</button></div></div>` : ''}
+  <div class="card"><strong>Send the book file</strong><p class="hint">The whole book goes to the person as a file${b.size ? ` (${fmtSize(b.size)})` : ''}, like sending it from your phone. Your highlights are not in it.</p>
+    <div class="btnrow"><button class="btn ${f ? 'plain' : ''}" data-act="sendPrep" data-m="file" ${SEND.busy ? 'disabled' : ''}>Get the file ready</button></div></div>
+  ${marks ? `<div class="card"><strong>Send with my highlights and notes</strong><p class="hint">A copy of the PDF with your marks drawn in. Your own book and marks do not change.</p>
+    <div class="btnrow"><button class="btn plain" data-act="sendPrep" data-m="marked" ${SEND.busy ? 'disabled' : ''}>Make the marked copy</button></div></div>` : ''}
+  ${b.src === 'drive' && CLOUD ? `<div class="card"><strong>Or send a link</strong><p class="hint">The link opens only this one book. Nobody can see your folder or your other books through it. Handy for very big books.</p>
+    ${b.linkOn ? `<div class="btnrow wrap">
+      <a class="btn plain" href="https://wa.me/?text=${encodeURIComponent(b.title + '\n' + u)}" target="_blank" rel="noopener">WhatsApp</a>
+      <a class="btn plain" href="https://t.me/share/url?url=${encodeURIComponent(u)}&text=${encodeURIComponent(b.title)}" target="_blank" rel="noopener">Telegram</a>
+      <a class="btn plain" href="mailto:?subject=${encodeURIComponent(b.title)}&body=${encodeURIComponent(b.title + '\n' + u)}">Mail</a>
+      <button class="btn plain" data-act="linkCopy">${IC.copy}Copy link</button></div>
+      <div class="btnrow"><button class="btn plain danger" data-act="linkOff">Stop sharing this link</button></div>`
+    : `<div class="btnrow"><button class="btn plain" data-act="linkOn" ${SEND.busy ? 'disabled' : ''}>Make a link for this book</button></div>`}</div>` : ''}`;
+}
+async function sendPrep(mode) {
+  const b = SEND && SEND.b; if (!b) return;
+  const needDrive = b.src === 'drive' && !(b.kind === 'pdf' && OFFLINE.has(b.id));
+  if (needDrive && !Drive.valid()) { withDrive(() => sendPrep(mode)); return; }
+  SEND.file = null; SEND.busy = mode === 'marked' ? 'Making the copy with your marks…' : (b.src === 'drive' ? 'Bringing the book from Google Drive…' : 'Getting the book ready…'); drawSend();
+  const prog = (got, tot) => { const i = $('#sendBar'); if (i) i.style.width = tot ? (got / tot * 100).toFixed(1) + '%' : '35%'; };
+  try {
+    let out;
+    if (mode === 'marked') {
+      const c = await getContent(b, prog, false);
+      const marks = R.open && R.id === b.id ? R.marks : await Store.marksFor(b.id);
+      out = { bytes: await buildMarkedPdf(b, c.bytes, marks), name: baseName(b) + ' (marked).pdf', type: 'application/pdf' };
+    } else out = await originalFile(b, prog);
+    if (!SEND || SEND.b !== b) return;
+    SEND.file = new File([out.bytes], out.name, { type: out.type });
+  } catch (e) { console.warn(e); toast(e && e.message === 'nomarks' ? 'No marks in this book yet' : driveErr(e)); }
+  if (SEND && SEND.b === b) { SEND.busy = ''; drawSend(); }
+}
+function baseName(b) { return String(b.name || b.title || 'Book').replace(/\.[a-z0-9]{2,5}$/i, ''); }
+async function originalFile(b, prog) {
+  const name = b.name || (b.title + '.pdf');
+  if (b.src === 'demo') { const k = b.demo === 'docx' ? 'docx' : b.demo === 'xlsx' ? 'xlsx' : 'pdf'; return { bytes: demoBytes(k), name: b.title + '.' + k, type: k === 'pdf' ? 'application/pdf' : 'application/octet-stream' }; }
+  if (b.src === 'local') { const c = await fromCache(b.id); if (!c) throw new Error('notfound'); return { bytes: c.bytes, name, type: b.mime || 'application/octet-stream' }; }
+  if (/google-apps/.test(b.mime || '')) return { bytes: await exportDrive(b.driveId, 'application/pdf', prog), name: baseName(b) + '.pdf', type: 'application/pdf' };
+  if (b.kind === 'pdf') { const c = await getContent(b, prog, false); return { bytes: c.bytes, name: /\.pdf$/i.test(name) ? name : name + '.pdf', type: 'application/pdf' }; }
+  return { bytes: await downloadDrive(b.driveId, prog, b.size), name, type: b.mime || 'application/octet-stream' };
+}
+// The share menu must open straight from the tap, so the file is made ready first and sent with a second tap.
+function sendNow() {
+  const f = SEND && SEND.file; if (!f) return;
+  let ok = false; try { ok = !!(navigator.canShare && navigator.canShare({ files: [f] })); } catch (e) {}
+  if (ok) navigator.share({ files: [f], title: f.name }).catch(e => { if (e && e.name !== 'AbortError') saveFileLocal(f, true); });
+  else saveFileLocal(f, true);
+}
+async function saveFileLocal(f, explain) {
+  const r = await deliverFile(f.name, f, f.type, false);
+  if (r === 'fail') toast('This page cannot save files. Use the installed app.');
+  else if (explain) toast('Saved to this device (Downloads). Attach it in WhatsApp, Telegram or Mail.', 5000);
+  else toast('Saved to this device');
 }
 
 /* ================= reader ================= */
@@ -2182,6 +2292,7 @@ function openPanel(kind, data) {
   } else if (kind === 'more') {
     html = head('More') + `<div class="rp-body">
       <button class="btn plain" data-r="details">${IC.read}Book details</button>
+      <button class="btn plain" data-r="send">${IC.share}Send this book</button>
       ${R.kind === 'pdf' ? `<button class="btn plain" data-r="export">${IC.share}${CLOUD && b.src === 'drive' ? 'Save a marked copy to Google Drive' : 'Save a marked copy as PDF'}</button><p class="hint">Your highlights, drawings and notes are kept by the app and do not change the original file. The marked copy is a new PDF with them printed on the pages.</p>` : ''}
       ${R.kind === 'doc' && CLOUD && b.src === 'drive' ? `<button class="btn plain" data-r="asPdf">${IC.marker}Open as pages to mark up</button><p class="hint">Google Drive turns this Word file into PDF pages so you can highlight, draw and write notes on it.</p>` : ''}
       ${b.src === 'drive' ? `<a class="btn plain" href="https://drive.google.com/file/d/${encodeURIComponent(b.driveId)}/view" target="_blank" rel="noopener">${IC.cloud}Open in Google Drive</a>` : ''}
@@ -2312,36 +2423,45 @@ function openFrame(b) {
 function openMsg(msg) { R.kind = 'msg'; $('#rdScroll').innerHTML = `<div class="rd-msg">${IC.read.replace('<svg', '<svg width="48" height="48"')}<p>${esc(msg)}</p><button class="btn" data-r="close">Back to shelf</button></div>`; renderTools(); loadDone(); $('#rdPage').textContent = ''; updateHeader(); }
 
 /* ---------- marked copy (PDF with your marks drawn in) ---------- */
+async function buildMarkedPdf(b, bytes, marks) {
+  if (!marks || !Object.keys(marks).length) throw new Error('nomarks');
+  await needLib('pdflib'); await needLib('pdf');
+  const { PDFDocument, StandardFonts, rgb } = PDFLib;
+  const doc = await PDFDocument.load(bytes.slice(0), { ignoreEncryption: true }); const font = await doc.embedFont(StandardFonts.Helvetica);
+  const own = !(R.open && R.id === b.id && R.pdf);
+  const pj = own ? await pdfjsLib.getDocument({ data: bytes.slice(0), isEvalSupported: false }).promise : R.pdf;
+  const col = h => { const [r, g, bb] = hexRgb(h); return rgb(r / 255, g / 255, bb / 255); };
+  const safe = s => String(s || '').replace(/[^\x20-\x7E\xA0-\xFF\n]/g, '?');
+  try {
+      for (const ps of Object.keys(marks)) {
+        const p = +ps; const pg = doc.getPage(p - 1); if (!pg) continue;
+        const vp = (await pj.getPage(p)).getViewport({ scale: 1 }); const P = (x, y) => vp.convertToPdfPoint(x, y);
+        for (const it of marks[p]) {
+          if (it.rects) for (const r of it.rects) {
+            const [x1, y1] = P(r[0], r[1]), [x2, y2] = P(r[0] + r[2], r[1] + r[3]); const X = Math.min(x1, x2), Y = Math.min(y1, y2), W = Math.abs(x2 - x1), H = Math.abs(y2 - y1);
+            if (it.t === 'hl') pg.drawRectangle({ x: X, y: Y, width: W, height: H, color: col(it.c), opacity: .38 });
+            else { const [ax, ay] = P(r[0], r[1] + r[3] * (it.t === 'ul' ? .97 : .55)), [bx, by] = P(r[0] + r[2], r[1] + r[3] * (it.t === 'ul' ? .97 : .55)); pg.drawLine({ start: { x: ax, y: ay }, end: { x: bx, y: by }, thickness: 1.2, color: col(it.c) }); }
+          }
+          if (it.t === 'ink') for (let k = 0; k < it.pts.length - 2; k += 2) { const [ax, ay] = P(it.pts[k], it.pts[k + 1]), [bx, by] = P(it.pts[k + 2], it.pts[k + 3]); pg.drawLine({ start: { x: ax, y: ay }, end: { x: bx, y: by }, thickness: it.w, color: col(it.c), opacity: it.op || 1, lineCap: 1 }); }
+          if (it.t === 'tx') String(it.text).split('\n').forEach((l, k) => { const [x, y] = P(it.x, it.y + k * it.s * 1.2); pg.drawText(safe(l), { x, y, size: it.s, font, color: col(it.c) }); });
+          if (it.t === 'note' || (it.t === 'hl' && it.note)) {
+            const nx = it.t === 'note' ? it.x : it.rects[0][0], ny = it.t === 'note' ? it.y : it.rects[0][1]; const [x, y] = P(nx, ny);
+            const txt = safe(it.t === 'note' ? it.text : it.note); const lines = wrap(txt, font, 7, 160);
+            pg.drawRectangle({ x: x + 6, y: y - 6 - lines.length * 8.5, width: 168, height: lines.length * 8.5 + 6, color: rgb(1, .97, .7), borderColor: col(it.c), borderWidth: .8, opacity: .95 });
+            lines.forEach((l, k) => pg.drawText(l, { x: x + 10, y: y - 11 - k * 8.5, size: 7, font, color: rgb(.15, .12, .08) }));
+          }
+        }
+      }
+  } finally { if (own) { try { pj.destroy(); } catch (e) {} } }
+  return await doc.save();
+}
 async function exportMarked() {
   const b = byId(R.id) || R.book; if (R.kind !== 'pdf') return;
   if (!Object.keys(R.marks).length) { toast('No marks in this book yet'); return; }
   toast('Making the marked copy…', 6000);
   try {
-    await needLib('pdflib');
-    const c = await getContent(b, null, false); const { PDFDocument, StandardFonts, rgb } = PDFLib;
-    const doc = await PDFDocument.load(c.bytes, { ignoreEncryption: true }); const font = await doc.embedFont(StandardFonts.Helvetica);
-    const col = h => { const [r, g, bb] = hexRgb(h); return rgb(r / 255, g / 255, bb / 255); };
-    const safe = s => String(s || '').replace(/[^\x20-\x7E\xA0-\xFF\n]/g, '?');
-    for (const ps of Object.keys(R.marks)) {
-      const p = +ps; const pg = doc.getPage(p - 1); if (!pg) continue;
-      const vp = (await R.pdf.getPage(p)).getViewport({ scale: 1 }); const P = (x, y) => vp.convertToPdfPoint(x, y);
-      for (const it of R.marks[p]) {
-        if (it.rects) for (const r of it.rects) {
-          const [x1, y1] = P(r[0], r[1]), [x2, y2] = P(r[0] + r[2], r[1] + r[3]); const X = Math.min(x1, x2), Y = Math.min(y1, y2), W = Math.abs(x2 - x1), H = Math.abs(y2 - y1);
-          if (it.t === 'hl') pg.drawRectangle({ x: X, y: Y, width: W, height: H, color: col(it.c), opacity: .38 });
-          else { const [ax, ay] = P(r[0], r[1] + r[3] * (it.t === 'ul' ? .97 : .55)), [bx, by] = P(r[0] + r[2], r[1] + r[3] * (it.t === 'ul' ? .97 : .55)); pg.drawLine({ start: { x: ax, y: ay }, end: { x: bx, y: by }, thickness: 1.2, color: col(it.c) }); }
-        }
-        if (it.t === 'ink') for (let k = 0; k < it.pts.length - 2; k += 2) { const [ax, ay] = P(it.pts[k], it.pts[k + 1]), [bx, by] = P(it.pts[k + 2], it.pts[k + 3]); pg.drawLine({ start: { x: ax, y: ay }, end: { x: bx, y: by }, thickness: it.w, color: col(it.c), opacity: it.op || 1, lineCap: 1 }); }
-        if (it.t === 'tx') String(it.text).split('\n').forEach((l, k) => { const [x, y] = P(it.x, it.y + k * it.s * 1.2); pg.drawText(safe(l), { x, y, size: it.s, font, color: col(it.c) }); });
-        if (it.t === 'note' || (it.t === 'hl' && it.note)) {
-          const nx = it.t === 'note' ? it.x : it.rects[0][0], ny = it.t === 'note' ? it.y : it.rects[0][1]; const [x, y] = P(nx, ny);
-          const txt = safe(it.t === 'note' ? it.text : it.note); const lines = wrap(txt, font, 7, 160);
-          pg.drawRectangle({ x: x + 6, y: y - 6 - lines.length * 8.5, width: 168, height: lines.length * 8.5 + 6, color: rgb(1, .97, .7), borderColor: col(it.c), borderWidth: .8, opacity: .95 });
-          lines.forEach((l, k) => pg.drawText(l, { x: x + 10, y: y - 11 - k * 8.5, size: 7, font, color: rgb(.15, .12, .08) }));
-        }
-      }
-    }
-    const out = await doc.save(); const name = String(b.name || b.title).replace(/\.[a-z0-9]+$/i, '') + ' (marked).pdf';
+    const c = await getContent(b, null, false);
+    const out = await buildMarkedPdf(b, c.bytes, R.marks); const name = String(b.name || b.title).replace(/\.[a-z0-9]+$/i, '') + ' (marked).pdf';
     if (CLOUD && b.src === 'drive') { withDrive(async () => { await uploadDrive(new Blob([out], { type: 'application/pdf' }), b.folderId || (META.root && META.root.id), name, 'application/pdf'); toast('Saved to Google Drive: ' + name, 4000); }); }
     else { const r = await deliverFile(name, out, 'application/pdf', true); if (r === 'fail') toast('This page cannot save files. Use the installed app.'); }
   } catch (e) { console.warn(e); toast('Could not make the marked copy of this PDF'); }
@@ -2382,6 +2502,7 @@ const RACT = {
   docGo: a => { const e = (R.docHits || [])[+a.dataset.k]; if (e) { e.scrollIntoView({ block: 'center' }); e.style.transition = 'background .3s'; e.style.background = 'rgba(255,200,0,.45)'; setTimeout(() => e.style.background = '', 2500); } closePanel(); },
   xlTab: a => R.xlShow(+a.dataset.k),
   details: () => { closePanel(); $('#sheets').classList.add('over'); openDetail(R.id); },
+  send: () => { closePanel(); $('#sheets').classList.add('over'); openSend(byId(R.id) || R.book); },
   export: () => { closePanel(); exportMarked(); },
   asPdf: async () => { closePanel(); const b = byId(R.id); const l = document.createElement('div'); l.className = 'rd-load'; l.id = 'rdLoad'; l.innerHTML = '<div class="box"><span class="spinner"></span><strong>Turning it into pages…</strong></div>'; $('#reader').appendChild(l); try { const c = await getContent(b, null, true); const sc = $('#rdScroll'); sc.onclick = null; sc.innerHTML = '<div class="rd-pages" id="rdPages"></div>'; await openPdf(c.bytes); } catch (e) { toast(driveErr(e)); loadDone(); } },
   selHl: a => addSelMark('hl', a.dataset.c),
@@ -2498,6 +2619,8 @@ async function renderSettings() {
       <label class="fld" for="setKeepMB"><span>Space for kept books</span><select id="setKeepMB" data-act="keepMB">${[300, 800, 1500, 3000, 6000].map(v => `<option value="${v}" ${S.rd.keepMB === v ? 'selected' : ''}>${v >= 1000 ? v / 1000 + ' GB' : v + ' MB'}</option>`).join('')}</select></label>
       <p class="hint">Using ${fmtSize(used) || '0 KB'} for ${files.length} ${files.length === 1 ? 'book' : 'books'}. Books you mark “Keep on this device” are never let go.</p>
       <div class="btnrow"><button class="btn plain" data-act="clearFiles">Let go of kept books</button></div></div>` : ''}
+    ${HIDDEN.length ? `<div class="panel"><h3>Removed books</h3><p class="hint">These are off your shelf. The files are still in Google Drive, and your highlights, notes and reading place are kept. Bring one back and everything returns.</p>
+      <div class="hidlist">${HIDDEN.slice().sort((x, y) => (y.hiddenAt || 0) - (x.hiddenAt || 0)).map(b => `<div class="hidrow"><span><strong>${esc(b.title)}</strong>${b.markCount ? `<small>${b.markCount} marks kept</small>` : ''}</span><button class="btn plain" data-act="unhide" data-id="${esc(b.id)}">Bring back</button></div>`).join('')}</div></div>` : ''}
     <div class="panel"><h3>Search inside books</h3><p class="hint">${texts.length} of ${pdfs} PDF ${pdfs === 1 ? 'book' : 'books'} can be searched inside from the shelf on this device. A book becomes searchable the first time you open it.</p>
       <div class="btnrow"><button class="btn plain" data-act="indexAll" ${texts.length >= pdfs ? 'disabled' : ''}>Make all books searchable</button></div>${CLOUD ? '<p class="hint">This brings every book from Google Drive once. Use Wi-Fi.</p>' : ''}</div>
     <div class="panel"><h3>Book details</h3><p class="hint">Fill in authors, publisher, year and covers from the internet for every book that has no author yet. You can still change any of it.</p><div class="btnrow"><button class="btn plain" data-act="autoAll">Find details for all</button></div></div>
@@ -2522,13 +2645,13 @@ async function indexAll(btn) {
   }
   syncbar(''); toast('Done'); if (S.view === 'settings') renderSettings();
 }
-async function backupJSON() { const marks = CLOUD ? await Store.allMarks() : await Store.allMarks(); return JSON.stringify({ app: 'BookShelf', version: 1, exportedAt: new Date().toISOString(), meta: META, stats: STATS, books: BOOKS.filter(b => !b.example), marks: marks.filter(m => byId(m.bookId) && !byId(m.bookId).example) }); }
+async function backupJSON() { const marks = CLOUD ? await Store.allMarks() : await Store.allMarks(); return JSON.stringify({ app: 'BookShelf', version: 1, exportedAt: new Date().toISOString(), meta: META, stats: STATS, books: BOOKS.concat(HIDDEN).filter(b => !b.example), marks: marks.filter(m => { const b = byId(m.bookId) || HIDDEN.find(h => h.id === m.bookId); return b && !b.example; }) }); }
 async function restoreFrom(file) {
   try {
     const j = JSON.parse(await file.text()); if (!j || j.app !== 'BookShelf' || !Array.isArray(j.books)) throw new Error('bad');
     if (j.meta) { META = Object.assign(DEFAULT_META(), j.meta); await Store.saveMeta(); }
     if (j.stats) { STATS = j.stats; Store.saveStats(); }
-    const books = j.books.filter(b => b && b.id && b.title); books.forEach(b => { const k = BOOKS.findIndex(x => x.id === b.id); if (k >= 0) BOOKS[k] = b; else BOOKS.push(b); });
+    const books = j.books.filter(b => b && b.id && b.title); const all = BOOKS.concat(HIDDEN); books.forEach(b => { const k = all.findIndex(x => x.id === b.id); if (k >= 0) all[k] = b; else all.push(b); }); setBooks(all);
     await Store.saveBooks(books);
     for (const m of (j.marks || [])) await Store.saveMarks(m.bookId, m.page, m.items || []);
     MARKS_CACHE = null; renderAll(); toast(`Restored ${books.length} books`);
@@ -2602,7 +2725,7 @@ function signIn() {
 }
 async function signOut() {
   CloudStore.stop(); Drive.forget(); await CloudStore.auth.signOut().catch(() => {});
-  BOOKS = []; META = DEFAULT_META(); STATS = { days: {} }; await IDB.clear('books'); await IDB.clear('marks'); await IDB.clear('text');
+  BOOKS = []; HIDDEN = []; META = DEFAULT_META(); STATS = { days: {} }; await IDB.clear('books'); await IDB.clear('marks'); await IDB.clear('text');
   renderAll(); toast('Signed out');
 }
 
@@ -2631,7 +2754,19 @@ const ACT = {
   descMore: b => { const p = $('#desc', sheetOf(b)); p.classList.toggle('open'); b.textContent = p.classList.contains('open') ? 'Show less' : 'Read more'; },
   edit: () => openEdit(currentDetail()),
   coverPhoto: () => $('#coverFile').click(),
-  del: b => arm(b, 'Tap again to remove', async () => { const x = currentDetail(); await removeBook(x.id); closeSheet(); renderAll(); toast('Removed from shelf'); }),
+  del: b => arm(b, 'Tap again to remove', async () => {
+    const x = currentDetail();
+    if (x.src === 'drive') { await hideBook(x.id); closeSheet(); renderAll(); toast('Removed from the shelf. Your marks are kept. Bring it back from Settings.', 4500); }
+    else { await removeBook(x.id); closeSheet(); renderAll(); toast('Removed from shelf'); }
+  }),
+  unhide: async b => { await unhideBook(b.dataset.id); renderAll(); toast('Back on your shelf, with all your marks'); },
+  send: () => { const x = currentDetail(); if (x) openSend(x); },
+  sendPrep: b => sendPrep(b.dataset.m),
+  sendNow: () => sendNow(),
+  sendSave: () => { const f = SEND && SEND.file; if (f) saveFileLocal(f); },
+  linkOn: () => { const b = SEND && SEND.b; if (!b) return; withDrive(async () => { SEND.busy = 'Making the link…'; drawSend(); try { await bookLinkOn(b); } finally { SEND.busy = ''; drawSend(); } }); },
+  linkOff: b => arm(b, 'Tap again to stop', () => { const x = SEND && SEND.b; if (!x) return; withDrive(async () => { await bookLinkOff(x); drawSend(); toast('The link no longer opens this book'); }); }),
+  linkCopy: () => { const b = SEND && SEND.b; if (b) copyText(bookLink(b)); },
   findOnline: () => openFind(currentDetail()),
   findPick: b => { FIND.pick = +b.dataset.k; FIND.cover = !!FIND.res[FIND.pick].cover; renderFind(sheetOf(b)); sheetOf(b).scrollTop = 0; },
   findUnpick: b => { FIND.pick = -1; renderFind(sheetOf(b)); },
@@ -2707,7 +2842,7 @@ qInput.addEventListener('input', debounce(() => { S.q = qInput.value; $('[data-a
   await IDB.open();
   OFFLINE = new Set(await IDB.keys('files'));
   if (CLOUD) {
-    BOOKS = await IDB.all('books');
+    setBooks(await IDB.all('books'));
     showView('home');
     try { await CloudStore.boot(); } catch (e) { toast('Could not load Firebase. Check config.js and the internet.'); return; }
     Drive.loadGis().then(() => Drive.makeClient()).catch(() => {});
