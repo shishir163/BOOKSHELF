@@ -390,13 +390,16 @@ main{padding-bottom:calc(84px + env(safe-area-inset-bottom,0px))}
 .tool-row{display:flex;align-items:center;gap:2px;overflow-x:auto;scrollbar-width:none}
 .tool-row::-webkit-scrollbar{display:none}
 .tool{border:0;background:none;color:var(--rfg);display:grid;justify-items:center;gap:1px;font-size:10px;font-weight:700;padding:4px 5px;border-radius:10px;min-width:48px;flex:none}
-.tool.ic{min-width:38px;align-content:center}
+.tool.ic{min-width:44px}
 .tool svg{width:22px;height:22px}
 .tool.on{color:var(--racc);background:color-mix(in srgb,var(--racc) 14%,transparent)}
 .colors{display:flex;gap:8px;align-items:center;padding:0 4px;overflow-x:auto;scrollbar-width:none}
 .colors::-webkit-scrollbar{display:none}
 .cdot{width:26px;height:26px;border-radius:50%;border:2px solid transparent;background:var(--cc);padding:0;flex:none;box-shadow:inset 0 0 0 1px rgba(0,0,0,.15)}
 .cdot[aria-pressed="true"]{border-color:var(--rfg);box-shadow:inset 0 0 0 2px var(--rbar)}
+.mmode{display:flex;gap:4px;margin-left:auto;flex:none}
+.mmode button{border:1px solid var(--rline);background:none;color:var(--rfg);height:32px;padding:0 12px;border-radius:16px;font:600 13px/1 inherit;font-family:inherit}
+.mmode button[aria-pressed="true"]{border-color:var(--racc);color:var(--racc);background:color-mix(in srgb,var(--racc) 12%,transparent)}
 .wsel{display:flex;gap:4px;margin-left:auto;flex:none}
 .wsel button{border:1px solid var(--rline);background:none;color:var(--rfg);width:30px;height:30px;border-radius:8px;display:grid;place-items:center;padding:0}
 .wsel button[aria-pressed="true"]{border-color:var(--racc);color:var(--racc)}
@@ -1679,7 +1682,7 @@ async function openReader(id, page, find) {
   if (R.open) closeReader();
   const el = $('#reader');
   R = { open: true, id, book: b, kind: 'pdf', pdf: null, n: 0, base: {}, p1: null, z: 1, fit: 1, marks: {}, tool: 'read', hl: S.rd.hl || HL_COLORS[0], pen: S.rd.pen || PEN_COLORS[0], penW: S.rd.penW || 2, mkW: S.rd.mkW || 14, undo: [], redo: [], rendered: new Map(), cur: page || b.lastPage || 1, chrome: true, lastAct: Date.now(), find, els: [], tasks: new Map() };
-  el.innerHTML = readerShell(b); el.hidden = false; el.className = 'rd' + (S.rd.layout === 'h' ? ' hz' : ''); setMode(S.rd.mode);
+  R.mk = S.rd.mk || 'hl'; el.innerHTML = readerShell(b); el.hidden = false; el.className = 'rd' + (S.rd.layout === 'h' ? ' hz' : ''); setMode(S.rd.mode);
   $('#rdDim').style.opacity = S.rd.dim || 0;
   document.body.classList.add('locked'); pushNav('reader');
   b.lastOpened = Date.now(); if (b.kind === 'pdf' && (!b.status || b.status === 'want')) b.status = 'reading'; saveBookSoon(b);
@@ -1705,8 +1708,8 @@ function closeReader(fromPop) {
   saveProgress(true);
   Object.keys(R.saveT || {}).forEach(p => { clearTimeout(R.saveT[p]); Store.saveMarks(R.id, +p, R.marks[p] || []); });
   if (R.io) R.io.disconnect();
-  clearInterval(R.timer); releaseWake();
-  document.removeEventListener('selectionchange', onSelChange);
+  clearInterval(R.timer); stopAuto(); releaseWake();
+  document.removeEventListener('selectionchange', onSelChange); document.removeEventListener('keydown', onUndoKey);
   if (R.pdf) { try { R.pdf.destroy(); } catch (e) {} }
   R.open = false;
   const el = $('#reader'); el.hidden = true; el.innerHTML = ''; $('#sheets').classList.remove('over');
@@ -1724,10 +1727,11 @@ function renderTools() {
   if (R.kind !== 'pdf') { t.innerHTML = ''; t.hidden = true; return; }
   t.hidden = false;
   const drawTool = ['marker', 'pen', 'text', 'note'].includes(R.tool);
-  const colors = R.tool === 'marker' || R.tool === 'note' ? HL_COLORS : PEN_COLORS;
-  const curC = R.tool === 'marker' || R.tool === 'note' ? R.hl : R.pen;
-  t.innerHTML = `<div class="tool-row">${TOOLS.map(([k, l, i]) => `<button class="tool ${R.tool === k ? 'on' : ''}" data-r="tool" data-t="${k}" aria-pressed="${R.tool === k}">${rdIcon(i)}${l}</button>`).join('')}<span style="flex:1"></span><button class="tool ic" data-r="undo" ${R.undo.length ? '' : 'disabled style="opacity:.35"'} aria-label="Undo">${IC.undo}</button><button class="tool ic" data-r="redo" ${R.redo.length ? '' : 'disabled style="opacity:.35"'} aria-label="Redo">${IC.redo}</button></div>
-  ${drawTool ? `<div class="colors">${colors.map(c => `<button class="cdot" style="--cc:${c}" data-r="color" data-c="${c}" aria-pressed="${curC === c}" aria-label="Colour"></button>`).join('')}${R.tool === 'pen' || R.tool === 'marker' ? `<div class="wsel">${(R.tool === 'pen' ? [1.2, 2.2, 4] : [8, 14, 22]).map(w => `<button data-r="width" data-w="${w}" aria-pressed="${(R.tool === 'pen' ? R.penW : R.mkW) === w}" aria-label="Thickness"><i style="height:${Math.max(2, Math.round(w / (R.tool === 'pen' ? 1 : 3.2)))}px"></i></button>`).join('')}</div>` : ''}</div>` : ''}`;
+  const hlPal = R.tool === 'note' || (R.tool === 'marker' && R.mk === 'hl');
+  const colors = hlPal ? HL_COLORS : PEN_COLORS;
+  const curC = hlPal ? R.hl : R.pen;
+  t.innerHTML = `<div class="tool-row">${TOOLS.map(([k, l, i]) => `<button class="tool ${R.tool === k ? 'on' : ''}" data-r="tool" data-t="${k}" aria-pressed="${R.tool === k}">${rdIcon(i)}${l}</button>`).join('')}<span style="flex:1"></span><button class="tool ic" data-r="undo" ${R.undo.length ? '' : 'disabled style="opacity:.35"'} aria-label="Undo">${IC.undo}Undo</button><button class="tool ic" data-r="redo" ${R.redo.length ? '' : 'disabled style="opacity:.35"'} aria-label="Redo">${IC.redo}Redo</button></div>
+  ${drawTool ? `<div class="colors">${colors.map(c => `<button class="cdot" style="--cc:${c}" data-r="color" data-c="${c}" aria-pressed="${curC === c}" aria-label="Colour"></button>`).join('')}${R.tool === 'pen' ? `<div class="wsel">${[1.2, 2.2, 4].map(w => `<button data-r="width" data-w="${w}" aria-pressed="${R.penW === w}" aria-label="Thickness"><i style="height:${Math.max(2, Math.round(w))}px"></i></button>`).join('')}</div>` : ''}${R.tool === 'marker' ? `<div class="mmode">${[['hl', 'Highlight'], ['ul', 'Underline'], ['st', 'Strike']].map(([k, l]) => `<button data-r="mkmode" data-m="${k}" aria-pressed="${R.mk === k}">${l}</button>`).join('')}</div>` : ''}</div>` : ''}`;
   $('#reader').classList.toggle('drawing', ['pen', 'marker', 'eraser'].includes(R.tool));
 }
 
@@ -1886,11 +1890,11 @@ function itemSVG(it, i) {
 function drawMarks(p) {
   const el = R.els[p - 1]; if (!el) return; const svg = el.querySelector('svg.ann'); const nd = el.querySelector('.notes'); if (!svg) return;
   const items = R.marks[p] || []; const base = R.base[p] || R.p1;
-  svg.innerHTML = items.map(itemSVG).join('') + (R.live && R.live.p === p ? `<path id="livePath" fill="none" stroke="${R.live.c}" stroke-width="${R.live.w}" stroke-linecap="round" stroke-linejoin="round" opacity="${R.live.op}" class="${R.live.op < 1 ? 'hlr' : ''}"/>` : '');
+  svg.innerHTML = items.map(itemSVG).join('') + (R.liveSel && R.liveSel.byPage[p] ? itemSVG({ t: R.liveSel.t, c: R.liveSel.c, rects: R.liveSel.byPage[p] }, -1) : '') + (R.live && R.live.p === p ? `<path id="livePath" fill="none" stroke="${R.live.c}" stroke-width="${R.live.w}" stroke-linecap="round" stroke-linejoin="round" opacity="${R.live.op}" class="${R.live.op < 1 ? 'hlr' : ''}"/>` : '');
   nd.innerHTML = items.map((it, i) => it.t === 'note' ? `<button class="nbtn" style="left:${it.x / base.w * 100}%;top:${it.y / base.h * 100}%;--nc:${it.c}" data-r="item" data-p="${p}" data-i="${i}" aria-label="Note: ${esc(String(it.text || '').slice(0, 40))}">${IC.noteF}</button>` : '').join('');
 }
 function setMarks(p, items, noUndo) {
-  if (!noUndo) { R.undo.push({ p, before: JSON.stringify(R.marks[p] || []) }); if (R.undo.length > 100) R.undo.shift(); R.redo = []; }
+  if (!noUndo) { R.undo.push({ p, g: R.grp, before: JSON.stringify(R.marks[p] || []) }); if (R.undo.length > 150) R.undo.shift(); R.redo = []; }
   if (items.length) R.marks[p] = items; else delete R.marks[p];
   drawMarks(p); renderToolsSoon();
   R.saveT = R.saveT || {}; clearTimeout(R.saveT[p]);
@@ -1899,9 +1903,10 @@ function setMarks(p, items, noUndo) {
 }
 const renderToolsSoon = debounce(() => renderTools(), 50);
 function undoRedo(fromA, toA) {
-  const s = fromA.pop(); if (!s) return;
-  toA.push({ p: s.p, before: JSON.stringify(R.marks[s.p] || []) });
-  setMarks(s.p, JSON.parse(s.before), true); goPageIfFar(s.p);
+  const s = fromA.pop(); if (!s) return; const batch = [s];
+  while (s.g && fromA.length && fromA[fromA.length - 1].g === s.g) batch.push(fromA.pop());
+  batch.forEach(x => { toA.push({ p: x.p, g: x.g, before: JSON.stringify(R.marks[x.p] || []) }); setMarks(x.p, JSON.parse(x.before), true); });
+  goPageIfFar(batch[batch.length - 1].p);
 }
 function goPageIfFar(p) { if (Math.abs(p - R.cur) > 0) goPage(p); }
 function toBase(p, cx, cy) { const el = R.els[p - 1]; const r = el.getBoundingClientRect(); const b = R.base[p] || R.p1; return [+((cx - r.left) / r.width * b.w).toFixed(1), +((cy - r.top) / r.height * b.h).toFixed(1)]; }
@@ -1920,11 +1925,18 @@ function distSeg(px, py, ax, ay, bx, by) { const dx = bx - ax, dy = by - ay; con
 
 /* ---------- text selection → highlight ---------- */
 let selT;
+function onUndoKey(e) {
+  if (!R.open || R.kind !== 'pdf' || !(e.metaKey || e.ctrlKey) || !/^[zy]$/i.test(e.key) || e.target.matches('input,textarea')) return;
+  e.preventDefault(); (e.key.toLowerCase() === 'y' || e.shiftKey) ? RACT.redo() : RACT.undo();
+}
 function onSelChange() { clearTimeout(selT); selT = setTimeout(checkSel, 220); }
 function selInfo() {
   const sel = getSelection(); if (!sel || !sel.rangeCount || sel.isCollapsed) return null;
   const rg = sel.getRangeAt(0); const pages = $('#rdPages'); if (!pages || !pages.contains(rg.commonAncestorContainer)) return null;
-  const text = sel.toString().replace(/\s+/g, ' ').trim(); if (!text) return null;
+  return rangeInfo(rg, sel.toString());
+}
+function rangeInfo(rg, raw) {
+  const text = String(raw).replace(/\s+/g, ' ').trim(); if (!text) return null;
   const byPage = {};
   [...rg.getClientRects()].filter(r => r.width > 1 && r.height > 1).forEach(r => {
     const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
@@ -1950,14 +1962,67 @@ function checkSel() {
   bar.hidden = false;
 }
 function hideSel(keepSel) { const bar = $('#rdSel'); if (bar) bar.hidden = true; if (!keepSel) R.sel = null; }
-function addSelMark(t, c, note) {
-  const info = R.sel || selInfo(); if (!info) return;
-  let first = null;
+function addSelMark(t, c, note, given) {
+  const info = given || R.sel || selInfo(); if (!info) return;
+  let first = null; R.grp = uid('g');
   Object.entries(info.byPage).forEach(([p, rects]) => { p = +p; const it = { id: uid('m'), t, c, rects, text: info.text, at: Date.now() }; if (note && !first) it.note = note; setMarks(p, (R.marks[p] || []).concat(it)); if (!first) first = { p, i: R.marks[p].length - 1 }; });
+  R.grp = null;
   try { getSelection().removeAllRanges(); } catch (e) {} hideSel();
   return first;
 }
 async function copyText(t) { try { await navigator.clipboard.writeText(t); toast('Copied'); } catch (e) { toast('Copy is blocked here. Long-press the text to copy.'); } }
+
+
+/* ---------- highlighter: drag over text, it snaps to the words and lines ---------- */
+function pageUnder(x, y) {
+  for (const el of R.els.slice(Math.max(0, R.cur - 3), R.cur + 3)) { const q = el.getBoundingClientRect(); if (x >= q.left && x <= q.right && y >= q.top && y <= q.bottom) return el; }
+  return null;
+}
+function spansOf(p) {
+  const sc = $('#rdScroll'); const key = sc.scrollTop + ':' + sc.scrollLeft + ':' + R.z;
+  if (R.spanC && R.spanC.p === p && R.spanC.key === key) return R.spanC.list;
+  const el = R.els[p - 1];
+  const list = $$('.textLayer span', el).filter(s => s.firstChild && s.firstChild.nodeType === 3 && s.textContent.trim()).map(s => { const r = s.getBoundingClientRect(); return { s, l: r.left, t: r.top, r: r.right, b: r.bottom }; }).filter(o => o.r - o.l > .5 && o.b - o.t > .5);
+  R.spanC = { p, key, list }; return list;
+}
+function charX(node, i) { const rg = document.createRange(); rg.setStart(node, i); rg.setEnd(node, Math.min(i + 1, node.length)); const r = rg.getBoundingClientRect(); return r; }
+function snapPoint(x, y) {
+  const el = pageUnder(x, y); if (!el) return null; const p = +el.dataset.p;
+  const list = spansOf(p); if (!list.length) return null;
+  let best = null, bd = 1e9;
+  for (const o of list) {
+    const dy = y < o.t ? o.t - y : y > o.b ? y - o.b : 0; const dx = x < o.l ? o.l - x : x > o.r ? x - o.r : 0;
+    const d = dy * 1000 + dx; if (d < bd) { bd = d; best = o; }
+  }
+  if (!best) return null;
+  const node = best.s.firstChild; const n = node.length; let off;
+  if (x <= best.l) off = 0; else if (x >= best.r) off = n;
+  else { let lo = 0, hi = n; while (lo < hi) { const m = (lo + hi) >> 1; const r = charX(node, m); if (x < (r.left + r.right) / 2) hi = m; else lo = m + 1; } off = lo; }
+  return { node, off, p };
+}
+function snapRange(A, B) {
+  const rg = document.createRange(); rg.setStart(A.node, A.off); rg.collapse(true);
+  const c = rg.comparePoint(B.node, B.off);
+  if (c < 0) { rg.setStart(B.node, B.off); rg.setEnd(A.node, A.off); } else { rg.setEnd(B.node, B.off); }
+  return rg;
+}
+function updateSnap() {
+  const st = ptr_ && ptr_.snap; if (!st) return;
+  const B = snapPoint(ptr_.x, ptr_.y) || st.last; if (!B) return; st.last = B;
+  const rg = snapRange(st.A, B); const info = rangeInfo(rg, rg.toString());
+  const old = R.liveSel ? Object.keys(R.liveSel.byPage) : [];
+  R.liveSel = { t: R.mk, c: R.mk === 'hl' ? R.hl : R.pen, byPage: info ? info.byPage : {}, info };
+  new Set(old.concat(Object.keys(R.liveSel.byPage))).forEach(p => drawMarks(+p));
+}
+function stopAuto() { clearInterval(R.autoT); R.autoT = null; }
+function autoScroll(cy) {
+  if (S.rd.layout === 'h') return; const sc = $('#rdScroll'); const q = sc.getBoundingClientRect();
+  const v = cy < q.top + 50 ? -Math.ceil((q.top + 50 - cy) / 4) : cy > q.bottom - 50 ? Math.ceil((cy - (q.bottom - 50)) / 4) : 0;
+  if (!v) { stopAuto(); return; }
+  R.autoV = clamp(v, -30, 30);
+  if (!R.autoT) R.autoT = setInterval(() => { $('#rdScroll').scrollTop += R.autoV; updateSnap(); }, 16);
+}
+let ptr_ = null;
 
 /* ---------- drawing, notes, eraser, pinch ---------- */
 function bindPages(pages) {
@@ -1982,7 +2047,8 @@ function bindPages(pages) {
     const el = e.target.closest('.pg'); if (!el || !R.rendered.has(+el.dataset.p)) return;
     const p = +el.dataset.p; e.preventDefault();
     try { pages.setPointerCapture(e.pointerId); } catch (er) {}
-    ptr = { id: e.pointerId, p, moved: false };
+    ptr = ptr_ = { id: e.pointerId, p, moved: false, x: e.clientX, y: e.clientY };
+    if (R.tool === 'marker') { R.spanC = null; const A = snapPoint(e.clientX, e.clientY); if (A) { ptr.snap = { A, last: A }; R.liveSel = null; return; } }
     if (R.tool === 'eraser') { ptr.before = JSON.stringify(R.marks[p] || []); ptr.erased = false; eraseAt(p, e.clientX, e.clientY, ptr); return; }
     const pen = R.tool === 'pen';
     R.live = { p, c: pen ? R.pen : R.hl, w: pen ? R.penW : R.mkW, op: pen ? 1 : .38, pts: toBase(p, e.clientX, e.clientY) };
@@ -1991,11 +2057,12 @@ function bindPages(pages) {
   pages.addEventListener('pointermove', e => {
     if (!ptr || ptr.id !== e.pointerId) return;
     if (R.multi) { cancelLive(); ptr = null; return; }
-    ptr.moved = true;
+    ptr.moved = true; ptr.x = e.clientX; ptr.y = e.clientY;
+    if (ptr.snap) { updateSnap(); autoScroll(e.clientY); return; }
     if (R.tool === 'eraser') { eraseAt(ptr.p, e.clientX, e.clientY, ptr); return; }
     if (!R.live) return;
     if (R.tool === 'marker') {
-      // Highlighter: always a straight line from where you pressed to where you are now; near-horizontal snaps flat.
+      // Pages with no text (scans): a straight line from where you pressed to where you are now; near-horizontal snaps flat.
       const [x0, y0] = [R.live.pts[0], R.live.pts[1]]; let [x, y] = toBase(ptr.p, e.clientX, e.clientY);
       if (Math.abs(y - y0) < Math.max(5, Math.abs(x - x0) * .1)) y = y0;
       else if (Math.abs(x - x0) < Math.max(5, Math.abs(y - y0) * .1)) x = x0;
@@ -2010,7 +2077,14 @@ function bindPages(pages) {
   });
   const end = e => {
     if (!ptr || ptr.id !== e.pointerId) return;
-    const p = ptr.p;
+    const p = ptr.p; stopAuto();
+    if (ptr.snap) {
+      const info = R.liveSel && R.liveSel.info; const t = R.mk, c = R.mk === 'hl' ? R.hl : R.pen;
+      const had = R.liveSel && Object.keys(R.liveSel.byPage).length; const pgs = had ? Object.keys(R.liveSel.byPage) : [];
+      R.liveSel = null; pgs.forEach(q => drawMarks(+q)); ptr = ptr_ = null; R.drew = true; setTimeout(() => { R.drew = false; }, 60);
+      if (info) addSelMark(t, c, '', info);
+      return;
+    }
     if (R.tool === 'eraser') { if (ptr.erased) { R.undo.push({ p, before: ptr.before }); R.redo = []; setMarks(p, R.marks[p] || [], true); } ptr = null; R.drew = true; return; }
     if (R.live) {
       let pts = R.live.pts; if (pts.length === 2) pts = pts.concat(pts[0] + .3, pts[1] + .3);
@@ -2019,13 +2093,13 @@ function bindPages(pages) {
     }
     ptr = null; R.drew = true; setTimeout(() => { R.drew = false; }, 60);
   };
-  pages.addEventListener('pointerup', end); pages.addEventListener('pointercancel', e => { if (ptr && ptr.id === e.pointerId) { cancelLive(); ptr = null; } });
+  pages.addEventListener('pointerup', end); pages.addEventListener('pointercancel', e => { if (ptr && ptr.id === e.pointerId) { stopAuto(); const q = R.liveSel ? Object.keys(R.liveSel.byPage) : []; R.liveSel = null; q.forEach(x => drawMarks(+x)); cancelLive(); ptr = ptr_ = null; } });
 }
 function bindReader() {
   const rd = $('#reader'); const sc = $('#rdScroll');
   rd.onclick = e => { const a = e.target.closest('[data-r]'); if (a && !a.disabled) { R.lastAct = Date.now(); RACT[a.dataset.r] && RACT[a.dataset.r](a, e); } };
   sc.addEventListener('scroll', () => requestAnimationFrame(onScroll), { passive: true });
-  document.addEventListener('selectionchange', onSelChange);
+  document.addEventListener('selectionchange', onSelChange); document.addEventListener('keydown', onUndoKey);
   // two fingers: pinch to zoom, and pan while a pen tool is on
   let pin = null;
   sc.addEventListener('touchstart', e => {
@@ -2284,7 +2358,8 @@ const RACT = {
   close: () => closeReader(),
   closePanel: () => closePanel(),
   tool: a => { R.tool = a.dataset.t; hideSel(); try { getSelection().removeAllRanges(); } catch (e) {} renderTools(); if (R.tool !== 'read') toggleChrome(true); },
-  color: a => { if (R.tool === 'marker' || R.tool === 'note') { R.hl = a.dataset.c; S.rd.hl = R.hl; } else { R.pen = a.dataset.c; S.rd.pen = R.pen; } saveRd(); renderTools(); },
+  mkmode: a => { R.mk = a.dataset.m; S.rd.mk = R.mk; saveRd(); renderTools(); },
+  color: a => { if (R.tool === 'note' || (R.tool === 'marker' && R.mk === 'hl')) { R.hl = a.dataset.c; S.rd.hl = R.hl; } else { R.pen = a.dataset.c; S.rd.pen = R.pen; } saveRd(); renderTools(); },
   width: a => { const w = +a.dataset.w; if (R.tool === 'pen') { R.penW = w; S.rd.penW = w; } else { R.mkW = w; S.rd.mkW = w; } saveRd(); renderTools(); },
   undo: () => undoRedo(R.undo, R.redo),
   redo: () => undoRedo(R.redo, R.undo),
