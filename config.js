@@ -11,7 +11,7 @@ window.BOOKSHELF_CONFIG = {
   appId: "1:405664145855:web:a531ee5165fe846869010a"
   },
   // Google Cloud console → APIs & Services → Credentials → "Web client (auto created by Google Service)" → Client ID
-  googleClientId: "PASTE_CLIENT_ID.apps.googleusercontent.com",
+  googleClientId: "405664145855-ltk3ih8f3sd7t190pnm9sseo59f4kb07.apps.googleusercontent.com",
   // Optional: a Google Books API key gives more book searches per day. Leave empty if you have none.
   booksApiKey: ""
 };
